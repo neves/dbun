@@ -60,7 +60,7 @@ CREATE TABLE trash (
 );
 
 CREATE VIRTUAL TABLE terms USING fts5(
-  t, content='', contentless_delete=1, detail=none,
+  t, content='', contentless_delete=1, detail=full,
   tokenize="unicode61 tokenchars '=_'"
 );
 -- rowid = documents.id; t holds field=value terms, _ref=<id> terms, and plain words
@@ -72,9 +72,9 @@ CREATE VIRTUAL TABLE terms USING fts5(
 |---|---|
 | The id is a 64-bit integer in storage, because 26 characters was judged too big. | Confirmed |
 | At API level the id is always a string. | Confirmed |
-| The API string is `<collection>_<base36 integer>`, so references stay self-describing. See ADR-0003. | Proposed |
-| On collection-scoped calls the bare base36 part is accepted as input. The lib always returns the full prefixed id. | Proposed |
-| A prefix that does not match the collection is "not found", never another collection's document. | Proposed |
+| The API string is `<collection>-<base36 integer>`, so references stay self-describing. See ADR-0003. | Confirmed |
+| On collection-scoped calls the bare base36 part is accepted as input. The lib always returns the full prefixed id (`users-1x9f2k4m7pq`). | Confirmed |
+| A prefix that does not match the collection is "not found", never another collection's document. | Confirmed |
 | The `collection` column exists so the id does not have to carry the collection in storage. | Confirmed |
 
 ## 5. Lib-managed fields
@@ -149,15 +149,22 @@ All Confirmed by the owner.
 
 | Decision | Notes |
 |---|---|
-| **Full-text search**: every string field of every document is searchable automatically, through `posts.search("hello")`, scoped to one collection. | Ranking, prefix and phrase support, and tokenizer settings are still open (see section 12). |
+| **Full-text search**: every string field of every document is searchable automatically, through `posts.search("query")`, scoped to one collection. Supports full SQLite FTS5 syntax (phrases, prefixes, boolean `AND`/`OR`/`NOT`, `NEAR`) and sorts by BM25 `rank` by default. Uses `detail=full`. | Confirmed. |
 | **Query language**: equality filters only, plus sort and limit, in the MVP. | This is narrower than the earlier proposal. Ranges (`gt`, `lt`), `in`, `not`, `or`, `exists`, nested paths, `count` and cursor pagination are deferred. The in-memory range design in ADR-0004 is therefore not part of the MVP. |
-| **Collection access**: a typed schema object passed to `open`, so `acme.posts` is checked by TypeScript, with `acme.collection<Post>("posts")` as the dynamic fallback. | The contents of that schema object are still open. |
+| **No code-level schema**: zero-declaration API. Collections are accessed dynamically (`acme.posts` via Proxy or `acme.collection("posts")`). No schema object needed at `open()`. | Confirmed. Metadata (like labels, display names, collection settings) will live inside the database itself so the admin/agent can inspect and modify it at runtime. |
 | **Client-supplied ids**: allowed on insert, but only a valid prefixed id for that collection that does not already exist. | Covers imports and restores. |
-| **Concurrency**: one process per data directory in the MVP, using WAL mode. The id generator needs no worker bits. | The lib does not need cross-process locking. Whether it refuses to open a directory already in use is open. |
+| **Concurrency**: WAL mode enabled per file. No extra directory-level locking file (`.lock`); concurrency and locks are delegated to SQLite's native WAL engine. | The id generator is monotonic per process; SQLite handles file locking across threads/processes cleanly. |
 | **Tenant lifecycle**: a tenant is created lazily on the first `db.tenant(id)` use. Tenant ids are limited to lowercase letters, digits, `-` and `_` so they are safe filenames. The lib offers `db.tenants.list()`, `export` and `delete`. | The open-file cache size is still open. |
-
 | **Pagination**: keyset pagination with the last id as the next token, not offsets. | `find(filter, { limit, after })` returns `{ items, next }`, where `next` is the id of the last item, or `null` at the end. Stable under inserts and deletes. |
 | **Value matching**: `find({ age: 30 })` matches both `30` and `"30"`. | Numbers and strings compare loosely for equality. Stored and query values convert to a canonical string term. |
+| **Null and omitted fields**: `null` and `undefined` emit no terms. | On `update`/`patch`, the document's terms are removed (`DELETE FROM terms WHERE rowid = :id`) and regenerated from the updated JSON, automatically clearing terms for cleared fields. |
+| **Metadata storage**: stored in a reserved collection `_meta` within the same `documents` table. | Uses the existing `key` column (e.g. `key: "collections.posts"`). No new tables or DDL required; metadata benefits from the same versioning and API operations. |
+| **Admin introspection**: dynamic sampling of the most recent documents (e.g. `LIMIT 50`). | Infers field names and types by inspecting recent documents on demand. Zero write overhead, zero maintenance. |
+| **Collection names & Id format**: collection names match `^[a-z0-9_]+$` (snake_case), and the API id format is `<collection>-<base36_integer>`. | Hyphen `-` cleanly separates collection from the base36 id. Splitting on the last hyphen is 100% unambiguous. |
+| **Size limits**: maximum document payload is **1 MB**; maximum `key` length is **255 characters**. | Prevents accidental ingestion of large binary blobs from locking SQLite/FTS5. Exceeding throws a validation error. |
+| **Trash purge**: explicit on-demand call (`tenant.trash.purge({ olderThanDays: 30 })` or `{ olderThanMs: ... }`). | Zero background timers or implicit deletions. Completely predictable and caller-controlled. |
+| **Open-file cache**: LRU cache with default limit of **100 open tenant connections**, configurable via `maxOpenTenants`. | Automatically closes least recently used tenant database instances to keep file descriptor usage bounded. |
+| **Document schema evolution**: documented practice only (`schemaVersion` or `_v` field inside JSON). | The database does not enforce or track versions. Migration/upgrade logic runs lazily in application/agent code when reading old shapes. |
 
 ### Proposed from the same round
 
@@ -171,19 +178,15 @@ All Confirmed by the owner.
 | Nested objects index their scalars by dotted path (`address.city`). Each array element gets its own term. Objects and arrays themselves are not indexed. | Proposed |
 | Full-text words are added to the same index as plain tokens, and are separate from encoded equality terms. | Proposed |
 
-## 12. Still open
+## 12. Future Ideas (Post-MVP)
+
+- **Change notifications / Subscriptions**: in-memory change events (`tenant.on("change", ...)`) or live query hooks.
+- **Rebuilding derived data**: a command to rebuild the term index from `documents` (`tenant.reindex()`).
+- **Ordered index opt-in**: declared B-tree indexes for fast field ordering on massive collections.
+
+## 13. Still open
 
 Each affects the public interface or the stored data.
 
-1. **Full-text search details**: ranking, prefix and phrase queries, tokenizer and language handling, result limits, and how a search combines with an equality filter in one call. Ranked results cannot page on id, so search needs its own token.
-2. **Null and missing fields**: is `null` indexed as a term, and how does a client ask for "field is absent"? Is there a size cap on indexed values (long strings stay searchable as words, but may not get an equality term)?
-3. **What the typed schema object declares**: collection document types and the label override are clear. Is anything else (an ordered index later, a default sort) declared there?
-4. **Limits**: collection name rules (underscores interact with id parsing), maximum document size, maximum key length.
-5. **Durability and operations**: backup, vacuum after large purges, who schedules the trash purge, and whether the lib refuses to open a directory another process holds.
-6. **Introspection for the admin interface**: how does "fields seen in this collection" work without a schema table or a scan?
-7. **Rebuilding derived data**: a command to rebuild the term index from `documents`, and what happens when the term format changes between lib versions.
-8. **Change notification**: are live queries or change events in scope at all?
-9. **Per-document schema version**: is a `schemaVersion` JSON convention, with lazy upgrade on read, worth documenting as the answer to evolving shapes?
-10. **Open-file cache**: the default size and eviction rule for tenant file handles.
-11. **Unmeasured claims**: how many open SQLite files are practical, how long an index build takes, and how the integer-id and trash layout perform. None of these were benchmarked.
+1. **Unmeasured claims**: how many open SQLite files are practical, how long an index build takes, and how the integer-id and trash layout perform. None of these were benchmarked.
 

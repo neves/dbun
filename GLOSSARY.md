@@ -21,7 +21,7 @@ An isolated owner of data, stored as its own SQLite file in the data directory. 
 _Avoid_: Account, workspace, organization, database
 
 **Id**:
-The lib-generated identifier of a document. A time-sortable integer in storage, and always a string of the form `<collection>_<base36 integer>` at API level.
+The lib-generated identifier of a document. A time-sortable integer in storage, and always a string of the form `<collection>-<base36 integer>` at API level.
 _Avoid_: Primary key, uuid
 
 **Key**:
