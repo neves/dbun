@@ -11,5 +11,5 @@ A `deleted_at` or `is_deleted` column on live rows would make every query filter
 - Posts that reference a deleted author keep a dangling id until the author is restored. `get` returns `null` for it in the meantime.
 - Deleting frees the document's `key`. Restoring fails with `ConflictError` if the key has since been reused.
 - A concurrent editor's `{ version }` check fails against a deleted document, and restoring bumps `version`, so stale edits cannot overwrite it.
-- Retention is a purge of `trash` rows older than a cutoff. Who schedules it is open.
+- Retention is a purge of `trash` rows older than a cutoff. The caller runs it explicitly (`tenant.trash.purge(…)`); the lib has no background timer.
 - Full change history is a different feature, a `changes` log, and is out of the MVP.

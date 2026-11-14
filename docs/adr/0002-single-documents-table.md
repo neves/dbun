@@ -4,7 +4,7 @@ Status: proposed
 
 All collections live in one `documents` table, with the collection name in its own `collection` column and a `(collection, key)` unique index, instead of a table per collection created on first insert.
 
-Creating a table is cheap, so "the database never changes" is not the reason. The reasons are that `db.get(id)` and `db.referencing(id)` cross collections and want one table and one term index; every tenant file is identical, so none ever needs its structure checked after a lib upgrade; and collection names can be any string, with no SQL identifier rules.
+Creating a table is cheap, so "the database never changes" is not the reason. The reasons are that `db.get(id)` and `db.referencing(id)` cross collections and want one table and one term index, and that every tenant file is identical, so none ever needs its structure checked after a lib upgrade. (An earlier third reason, that collection names could be any string, no longer holds: ADR-0003 limits them to `^[a-z0-9_]+$`.)
 
 In a benchmark of 200k documents (150k posts, 50k comments), an unindexed filter over the comments took 31 ms in the shared table (limited by id range), 27 ms in its own table and 85 ms scanning everything. A table per collection would make scans about 15% faster and dropping a large collection instant.
 

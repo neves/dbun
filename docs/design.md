@@ -95,7 +95,7 @@ CREATE VIRTUAL TABLE terms USING fts5(
 |---|---|
 | Soft delete must not make every query filter on a marker, and must not lose the deletion time. | Confirmed |
 | Delete moves the row to `trash` with `deleted_at`, in one transaction, and removes its terms. Restore moves it back, bumps `version` and re-indexes. See ADR-0005. | Proposed |
-| A purge deletes trash rows older than a cutoff. | Proposed |
+| A purge deletes trash rows older than a cutoff, and only when the caller asks (see section 11). | Confirmed |
 | Deleting a document frees its `key`. A restore fails with `ConflictError` if the key was reused. | Proposed |
 | A full change history (`changes` log) is out of the MVP. | Proposed |
 
@@ -131,7 +131,7 @@ See ADR-0004.
 | Many-to-many is an array of ids on one side, or a join collection with a composite `key` for unique pairs. | Proposed |
 | Collection names are permanent (renaming would rewrite ids). | Proposed |
 | `ownerId` and `tenantId` are naming conventions only; the lib does nothing special with them. | Proposed |
-| A document's display label is the first non-empty string among `title`, `name`, `label`, else the id, with a per-collection override in the TypeScript schema. | Proposed |
+| A document's display label is the first non-empty string among `title`, `name`, `label`, else the id, with a per-collection override stored in `_meta` (see section 11). | Proposed |
 
 ## 10. Superseded earlier decisions
 
@@ -150,11 +150,11 @@ All Confirmed by the owner.
 | Decision | Notes |
 |---|---|
 | **Full-text search**: every string field of every document is searchable automatically, through `posts.search("query")`, scoped to one collection. Supports full SQLite FTS5 syntax (phrases, prefixes, boolean `AND`/`OR`/`NOT`, `NEAR`) and sorts by BM25 `rank` by default. Uses `detail=full`. | Confirmed. |
-| **Query language**: equality filters only, plus sort and limit, in the MVP. | This is narrower than the earlier proposal. Ranges (`gt`, `lt`), `in`, `not`, `or`, `exists`, nested paths, `count` and cursor pagination are deferred. The in-memory range design in ADR-0004 is therefore not part of the MVP. |
+| **Query language**: equality filters only, in id order (ascending or descending), with a limit and keyset pagination, in the MVP. | This is narrower than the earlier proposal. Ranges (`gt`, `lt`), `in`, `not`, `or`, `exists`, `count` and sorting by a field are deferred. The in-memory range design in ADR-0004 is therefore not part of the MVP. |
 | **No code-level schema**: zero-declaration API. Collections are accessed dynamically (`acme.posts` via Proxy or `acme.collection("posts")`). No schema object needed at `open()`. | Confirmed. Metadata (like labels, display names, collection settings) will live inside the database itself so the admin/agent can inspect and modify it at runtime. |
 | **Client-supplied ids**: allowed on insert, but only a valid prefixed id for that collection that does not already exist. | Covers imports and restores. |
 | **Concurrency**: WAL mode enabled per file. No extra directory-level locking file (`.lock`); concurrency and locks are delegated to SQLite's native WAL engine. | The id generator is monotonic per process; SQLite handles file locking across threads/processes cleanly. |
-| **Tenant lifecycle**: a tenant is created lazily on the first `db.tenant(id)` use. Tenant ids are limited to lowercase letters, digits, `-` and `_` so they are safe filenames. The lib offers `db.tenants.list()`, `export` and `delete`. | The open-file cache size is still open. |
+| **Tenant lifecycle**: a tenant is created lazily on the first `db.tenant(id)` use. Tenant ids are limited to lowercase letters, digits, `-` and `_` so they are safe filenames. The lib offers `db.tenants.list()`, `export` and `delete`. | The open-file cache size is set in the "Open-file cache" row below. |
 | **Pagination**: keyset pagination with the last id as the next token, not offsets. | `find(filter, { limit, after })` returns `{ items, next }`, where `next` is the id of the last item, or `null` at the end. Stable under inserts and deletes. |
 | **Value matching**: `find({ age: 30 })` matches both `30` and `"30"`. | Numbers and strings compare loosely for equality. Stored and query values convert to a canonical string term. |
 | **Null and omitted fields**: `null` and `undefined` emit no terms. | On `update`/`patch`, the document's terms are removed (`DELETE FROM terms WHERE rowid = :id`) and regenerated from the updated JSON, automatically clearing terms for cleared fields. |
